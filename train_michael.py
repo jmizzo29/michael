@@ -121,5 +121,7 @@ if __name__ == "__main__":
     output = bytes(out_bytes).decode("utf-8", errors="replace")
 
     print(f"Input Prompt: '{test_prompt}'")
-    print(f"Generated Output: {output!r}")
+    # Avoid Windows console UnicodeEncodeError on non-cp1252 attractor bytes.
+    safe = output.encode("ascii", errors="backslashreplace").decode("ascii")
+    print(f"Generated Output: '{safe}'")
     print(f"Raw attractor bytes: {out_bytes}")
