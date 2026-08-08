@@ -1,17 +1,16 @@
-//! Clifford-torus encoder + 2D non-linear cellular automata manifold.
-//! Core generation path without linear matrix multiplication.
+//! Clifford-torus encoder + 2D CA manifold with Hebbian plasticity training.
+//! Training = expose substrate to text so the plasticity mesh settles into attractors.
+//! Inference = freeze learning_rate and let waves collapse to output bytes.
 
 use std::f64::consts::PI;
 
-/// Encodes raw byte streams into 3D toroidal phase trajectories.
-pub struct CliffordTorusEncoder;
+/// Maps raw bytes to 3D Clifford torus phase coordinates.
+pub struct TorusEncoder;
 
-impl CliffordTorusEncoder {
-    pub fn encode_byte(&self, byte_val: u8, prev_byte: u8) -> (f64, f64, f64) {
+impl TorusEncoder {
+    pub fn encode(&self, byte_val: u8, prev_byte: u8) -> (f64, f64, f64) {
         let theta = (2.0 * PI * f64::from(byte_val)) / 256.0;
         let phi = (2.0 * PI * f64::from(byte_val ^ prev_byte)) / 256.0;
-
-        // Map to 3D Clifford torus surface.
         let x = (2.0 + phi.cos()) * theta.cos();
         let y = (2.0 + phi.cos()) * theta.sin();
         let z = phi.sin();
@@ -19,23 +18,23 @@ impl CliffordTorusEncoder {
     }
 }
 
-/// 2D non-linear CA manifold operating as the core engine.
-pub struct CellularAutomataEngine {
+/// 2D cellular automata manifold with local Hebbian plasticity ("weights").
+pub struct MichaelSubstrate {
     pub size: usize,
     pub grid: Vec<Vec<f64>>,
-    pub plasticity_mesh: Vec<Vec<f64>>,
+    pub plasticity: Vec<Vec<f64>>,
 }
 
-impl CellularAutomataEngine {
+impl MichaelSubstrate {
     pub fn new(size: usize) -> Self {
         Self {
             size,
             grid: vec![vec![0.0; size]; size],
-            plasticity_mesh: vec![vec![1.0; size]; size],
+            plasticity: vec![vec![1.0; size]; size],
         }
     }
 
-    pub fn inject_torus_signal(&mut self, coords: (f64, f64, f64)) {
+    pub fn inject_phase(&mut self, coords: (f64, f64, f64)) {
         let (x, y, z) = coords;
         let size_m1 = (self.size - 1) as f64;
         let mut cx = (((x + 3.0) / 6.0) * size_m1) as isize;
@@ -46,82 +45,166 @@ impl CellularAutomataEngine {
         self.grid[cx as usize][cy as usize] += z;
     }
 
-    pub fn step_evolution(&mut self) {
+    /// Evolve one CA step. Returns total |Δplasticity| when learning_rate > 0.
+    pub fn evolve(&mut self, learning_rate: f64) -> f64 {
         let n = self.size;
         let mut new_grid = vec![vec![0.0; n]; n];
+        let mut total_plasticity_change = 0.0;
 
         for r in 0..n {
             for c in 0..n {
-                // 4-neighbor cellular interaction (toroidal wrap).
                 let up = self.grid[(r + n - 1) % n][c];
                 let down = self.grid[(r + 1) % n][c];
                 let left = self.grid[r][(c + n - 1) % n];
                 let right = self.grid[r][(c + 1) % n];
 
-                // Non-linear wave interaction (no linear matrix multiplication).
-                let local_field = (up + down + left + right) * self.plasticity_mesh[r][c];
-                new_grid[r][c] = local_field.tanh() - 0.1 * self.grid[r][c].sin();
+                let local_field = (up + down + left + right) * self.plasticity[r][c];
+                new_grid[r][c] = local_field.tanh() - 0.05 * self.grid[r][c].sin();
 
-                // Thermodynamic Hebbian adaptation.
-                self.plasticity_mesh[r][c] += 0.01 * (new_grid[r][c] * self.grid[r][c]);
-                self.plasticity_mesh[r][c] = self.plasticity_mesh[r][c].clamp(0.1, 2.0);
+                if learning_rate > 0.0 {
+                    let delta = learning_rate * (new_grid[r][c] * self.grid[r][c]);
+                    self.plasticity[r][c] =
+                        (self.plasticity[r][c] + delta).clamp(0.05, 3.0);
+                    total_plasticity_change += delta.abs();
+                }
             }
         }
 
         self.grid = new_grid;
+        total_plasticity_change
     }
 
-    pub fn collapse_attractor_to_byte(&self) -> u8 {
-        let total_energy: f64 = self
+    pub fn read_attractor_byte(&self) -> u8 {
+        let energy: f64 = self
             .grid
             .iter()
             .flat_map(|row| row.iter())
             .map(|v| v.abs())
             .sum();
-        ((total_energy * 100.0) % 256.0) as u8
+        ((energy * 100.0) % 256.0) as u8
+    }
+
+    pub fn mean_plasticity(&self) -> f64 {
+        let n = (self.size * self.size) as f64;
+        self.plasticity.iter().flatten().sum::<f64>() / n
     }
 }
 
-/// End-to-end MICHAEL non-standard generator.
+/// Train (Hebbian plasticity adaptation) + generate (frozen inference).
+pub struct MichaelTrainer {
+    pub encoder: TorusEncoder,
+    pub engine: MichaelSubstrate,
+}
+
+impl MichaelTrainer {
+    pub fn new(size: usize) -> Self {
+        Self {
+            encoder: TorusEncoder,
+            engine: MichaelSubstrate::new(size),
+        }
+    }
+
+    pub fn train(&mut self, corpus: &str, epochs: usize, lr: f64) {
+        println!(
+            "=== STARTING TRAINING (Corpus Length: {} chars, Epochs: {epochs}) ===",
+            corpus.len()
+        );
+        let bytes_data = corpus.as_bytes();
+
+        for epoch in 1..=epochs {
+            let mut prev: u8 = 0;
+            let mut epoch_loss = 0.0;
+
+            for &b in bytes_data {
+                let coords = self.encoder.encode(b, prev);
+                self.engine.inject_phase(coords);
+                epoch_loss += self.engine.evolve(lr);
+                prev = b;
+            }
+
+            println!("Epoch {epoch:2}/{epochs} | Plasticity Adaptation Energy: {epoch_loss:.6}");
+        }
+
+        println!("=== TRAINING COMPLETE: Substrate Plasticity Settled ===\n");
+    }
+
+    pub fn generate(&mut self, prompt: &str, gen_length: usize) -> Vec<u8> {
+        let mut prev: u8 = 0;
+
+        // Phase 1: context ingress (learning frozen).
+        for &b in prompt.as_bytes() {
+            let coords = self.encoder.encode(b, prev);
+            self.engine.inject_phase(coords);
+            self.engine.evolve(0.0);
+            prev = b;
+        }
+
+        // Phase 2: attractor basin generation + autoregressive feedback.
+        let mut out_bytes = Vec::with_capacity(gen_length);
+        for _ in 0..gen_length {
+            self.engine.evolve(0.0);
+            let next_b = self.engine.read_attractor_byte();
+            out_bytes.push(next_b);
+
+            let coords = self.encoder.encode(next_b, prev);
+            self.engine.inject_phase(coords);
+            prev = next_b;
+        }
+
+        out_bytes
+    }
+
+    pub fn generate_lossy_utf8(&mut self, prompt: &str, gen_length: usize) -> String {
+        let bytes = self.generate(prompt, gen_length);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl Default for MichaelTrainer {
+    fn default() -> Self {
+        Self::new(16)
+    }
+}
+
+// --- Compatibility aliases used by earlier demos ---
+
+pub type CliffordTorusEncoder = TorusEncoder;
+pub type CellularAutomataEngine = MichaelSubstrate;
+
+impl TorusEncoder {
+    pub fn encode_byte(&self, byte_val: u8, prev_byte: u8) -> (f64, f64, f64) {
+        self.encode(byte_val, prev_byte)
+    }
+}
+
+impl MichaelSubstrate {
+    pub fn inject_torus_signal(&mut self, coords: (f64, f64, f64)) {
+        self.inject_phase(coords);
+    }
+
+    pub fn step_evolution(&mut self) {
+        let _ = self.evolve(0.01);
+    }
+
+    pub fn collapse_attractor_to_byte(&self) -> u8 {
+        self.read_attractor_byte()
+    }
+}
+
+/// Legacy thin wrapper around [`MichaelTrainer`].
 pub struct MichaelEngine {
-    pub encoder: CliffordTorusEncoder,
-    pub ca: CellularAutomataEngine,
+    pub trainer: MichaelTrainer,
 }
 
 impl MichaelEngine {
     pub fn new() -> Self {
         Self {
-            encoder: CliffordTorusEncoder,
-            ca: CellularAutomataEngine::new(16),
+            trainer: MichaelTrainer::new(16),
         }
     }
 
     pub fn process_and_generate(&mut self, input_text: &str, generate_length: usize) -> Vec<u8> {
-        let raw_bytes = input_text.as_bytes();
-        let mut prev: u8 = 0;
-
-        // 1. Absorb input sequence.
-        for &b in raw_bytes {
-            let coords = self.encoder.encode_byte(b, prev);
-            self.ca.inject_torus_signal(coords);
-            self.ca.step_evolution();
-            prev = b;
-        }
-
-        // 2. Collapse state and generate output bytes.
-        let mut output_bytes = Vec::with_capacity(generate_length);
-        for _ in 0..generate_length {
-            self.ca.step_evolution();
-            let next_byte = self.ca.collapse_attractor_to_byte();
-            output_bytes.push(next_byte);
-
-            // Feed byte back into the manifold.
-            let coords = self.encoder.encode_byte(next_byte, prev);
-            self.ca.inject_torus_signal(coords);
-            prev = next_byte;
-        }
-
-        output_bytes
+        self.trainer.generate(input_text, generate_length)
     }
 
     pub fn process_and_generate_lossy_utf8(
@@ -129,8 +212,7 @@ impl MichaelEngine {
         input_text: &str,
         generate_length: usize,
     ) -> String {
-        let bytes = self.process_and_generate(input_text, generate_length);
-        String::from_utf8_lossy(&bytes).into_owned()
+        self.trainer.generate_lossy_utf8(input_text, generate_length)
     }
 }
 
@@ -140,33 +222,39 @@ impl Default for MichaelEngine {
     }
 }
 
-/// Demo + sanity asserts for the CA manifold path.
+/// Full train → infer harness (matches the zero-dep Python script).
 pub fn run_demo() {
     println!("=== Testing MICHAEL Clifford-Torus / CA Manifold ===");
 
-    let mut engine = MichaelEngine::new();
-    let prompt = "Hello World";
-    println!("Prompt: {prompt}");
+    let mut michael = MichaelTrainer::new(16);
+    let plasticity_before = michael.engine.mean_plasticity();
 
-    let generated_bytes = engine.process_and_generate(prompt, 12);
-    assert_eq!(generated_bytes.len(), 12);
-    println!("Raw bytes: {generated_bytes:?}");
+    let training_data =
+        "MICHAEL SYSTEM RESONANCE WAVE PATTERN LOGIC HEBBIAN ATTRACTOR ".repeat(5);
+    michael.train(&training_data, 10, 0.02);
 
-    let mut engine2 = MichaelEngine::new();
-    let generated = engine2.process_and_generate_lossy_utf8(prompt, 12);
-    println!("MICHAEL Non-Standard Output: {generated:?}");
+    let plasticity_after = michael.engine.mean_plasticity();
+    let adapted = michael
+        .engine
+        .plasticity
+        .iter()
+        .flatten()
+        .any(|&w| (w - 1.0).abs() > 1e-6);
+    assert!(
+        adapted,
+        "training should adapt at least one plasticity cell away from 1.0"
+    );
 
-    // Encoder maps distinct XOR phases to distinct torus points.
-    let enc = CliffordTorusEncoder;
-    let a = enc.encode_byte(1, 0);
-    let b = enc.encode_byte(2, 0);
-    assert_ne!(a, b);
+    let test_prompt = "MICHAEL";
+    let output_bytes = michael.generate(test_prompt, 15);
+    assert_eq!(output_bytes.len(), 15);
+    let output = String::from_utf8_lossy(&output_bytes);
 
-    // Evolution changes the grid (non-zero energy after inject + step).
-    let mut ca = CellularAutomataEngine::new(8);
-    ca.inject_torus_signal(enc.encode_byte(b'A', 0));
-    ca.step_evolution();
-    let energy: f64 = ca.grid.iter().flat_map(|r| r.iter()).map(|v| v.abs()).sum();
-    assert!(energy > 0.0, "manifold should hold field energy after inject");
+    println!("Input Prompt: '{test_prompt}'");
+    println!("Generated Output: '{output}'");
+    println!("Raw bytes: {output_bytes:?}");
+    println!(
+        "Mean plasticity: before={plasticity_before:.4} after={plasticity_after:.4}"
+    );
     println!();
 }
